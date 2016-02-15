@@ -15,16 +15,15 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/errno.h>
+#include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/memblock.h>
-#include <linux/pstore_ram.h>
 #include <linux/rslib.h>
 #include <linux/slab.h>
-#include <linux/uaccess.h>
 #include <linux/vmalloc.h>
+#include <linux/pstore_ram.h>
 #include <asm/page.h>
 
 struct persistent_ram_buffer {
@@ -260,41 +259,12 @@ ssize_t persistent_ram_ecc_string(struct persistent_ram_zone *prz,
 	return ret;
 }
 
-#ifdef CONFIG_PSTORE
-static void *memcpy_pstore(void *dest, const void *src, size_t count)
-{
-	char *tmp = dest;
-	const char *s = src;
-	if ( dest == NULL || src == NULL || count < 0 )
-		return NULL;
-
-	while (count--)
-		*tmp++ = *s++;
-
-	return dest;
-}
-#endif
-
 static void notrace persistent_ram_update(struct persistent_ram_zone *prz,
 	const void *s, unsigned int start, unsigned int count)
 {
 	struct persistent_ram_buffer *buffer = prz->buffer;
-#ifdef CONFIG_PSTORE
-        memcpy_pstore(buffer->data + start, s, count);
-#else
-	memcpy(buffer->data + start, s, count);
-#endif
+	memcpy_toio(buffer->data + start, s, count);
 	persistent_ram_update_ecc(prz, start, count);
-}
-
-static int notrace persistent_ram_update_user(struct persistent_ram_zone *prz,
-	const void __user *s, unsigned int start, unsigned int count)
-{
-	struct persistent_ram_buffer *buffer = prz->buffer;
-	int ret = unlikely(__copy_from_user(buffer->data + start, s, count)) ?
-		-EFAULT : 0;
-	persistent_ram_update_ecc(prz, start, count);
-	return ret;
 }
 
 void persistent_ram_save_old(struct persistent_ram_zone *prz)
@@ -348,38 +318,6 @@ int notrace persistent_ram_write(struct persistent_ram_zone *prz,
 	persistent_ram_update_header_ecc(prz);
 
 	return count;
-}
-
-int notrace persistent_ram_write_user(struct persistent_ram_zone *prz,
-	const void __user *s, unsigned int count)
-{
-	int rem, ret = 0, c = count;
-	size_t start;
-
-	if (unlikely(!access_ok(VERIFY_READ, s, count)))
-		return -EFAULT;
-	if (unlikely(c > prz->buffer_size)) {
-		s += c - prz->buffer_size;
-		c = prz->buffer_size;
-	}
-
-	buffer_size_add(prz, c);
-
-	start = buffer_start_add(prz, c);
-
-	rem = prz->buffer_size - start;
-	if (unlikely(rem < c)) {
-		ret = persistent_ram_update_user(prz, s, start, rem);
-		s += rem;
-		c -= rem;
-		start = 0;
-	}
-	if (likely(!ret))
-		ret = persistent_ram_update_user(prz, s, start, c);
-
-	persistent_ram_update_header_ecc(prz);
-
-	return unlikely(ret) ? ret : count;
 }
 
 size_t persistent_ram_old_size(struct persistent_ram_zone *prz)
